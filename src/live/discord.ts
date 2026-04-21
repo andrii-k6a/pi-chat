@@ -197,7 +197,7 @@ export async function connectDiscordLive(
 		sendImmediate: async (text, replyToMessageId) => {
 			return sendDiscordMessage(account.botToken, conversation.channel.id, text, [], undefined, replyToMessageId);
 		},
-		sendFinal: async (text, attachmentPaths = [], signal, replyToMessageId) =>
+		send: async (text, attachmentPaths = [], signal, replyToMessageId) =>
 			sendDiscordMessage(account.botToken, conversation.channel.id, text, attachmentPaths, signal, replyToMessageId),
 		startTyping: async () => {
 			const channel = await resolveTextChannel(client, conversation);

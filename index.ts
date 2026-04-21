@@ -141,10 +141,7 @@ export default function (pi: ExtensionAPI) {
 	let chatTurnInFlight = false;
 	let configLoadedAtLeastOnce = false;
 	let typingInterval: ReturnType<typeof setInterval> | undefined;
-	let previewTimer: ReturnType<typeof setTimeout> | undefined;
-	let pendingPreviewText = "";
 	let queuedOutboundAttachments: string[] = [];
-	let previewChain: Promise<void> = Promise.resolve();
 	let pendingChatDispatch = false;
 	let pendingControlAction: (() => Promise<void>) | undefined;
 	let activeTriggerMessageId: string | undefined;
@@ -501,36 +498,6 @@ export default function (pi: ExtensionAPI) {
 		void liveConnection?.stopTyping();
 	}
 
-	async function flushPreview(done = false): Promise<void> {
-		if (previewTimer) {
-			clearTimeout(previewTimer);
-			previewTimer = undefined;
-		}
-		if (!liveConnection || !chatTurnInFlight) return;
-		previewChain = previewChain
-			.then(async () => {
-				if (!liveConnection || !chatTurnInFlight) return;
-				await liveConnection.syncPreview(pendingPreviewText, done);
-			})
-			.catch(() => undefined);
-		await previewChain;
-	}
-
-	function clearPreviewTimer(): void {
-		if (!previewTimer) return;
-		clearTimeout(previewTimer);
-		previewTimer = undefined;
-	}
-
-	function schedulePreview(text: string): void {
-		pendingPreviewText = text;
-		if (text.trim().length > 0) stopTypingLoop();
-		if (previewTimer) return;
-		previewTimer = setTimeout(() => {
-			void flushPreview(false);
-		}, 750);
-	}
-
 	pi.registerTool({
 		name: "chat_history",
 		label: "Chat History",
@@ -703,8 +670,6 @@ export default function (pi: ExtensionAPI) {
 			chatTurnInFlight = true;
 			activeTriggerMessageId = next.triggerMessageId;
 			queuedOutboundAttachments = [];
-			pendingPreviewText = "";
-			previewChain = Promise.resolve();
 			pendingChatDispatch = true;
 			liveConnection?.setReplyTo(activeTriggerMessageId);
 			startTypingLoop();
@@ -722,8 +687,6 @@ export default function (pi: ExtensionAPI) {
 
 	async function disconnectRuntime(ctx: ExtensionContext, clearPersistedState = true): Promise<void> {
 		stopTypingLoop();
-		clearPreviewTimer();
-		pendingPreviewText = "";
 		const connection = liveConnection;
 		liveConnection = undefined;
 		if (connection) await connection.disconnect().catch(() => undefined);
@@ -880,22 +843,6 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_start", async (_event, _ctx) => {});
 
-	pi.on("message_update", async (event, _ctx) => {
-		if (!chatTurnInFlight || !liveConnection) return;
-		const message = event.message as unknown as Record<string, unknown>;
-		if (message.role !== "assistant") return;
-		const content = Array.isArray(message.content) ? message.content : [];
-		const text = content
-			.filter(
-				(block): block is { type: string; text?: string } =>
-					typeof block === "object" && block !== null && "type" in block,
-			)
-			.filter((block) => block.type === "text" && typeof block.text === "string")
-			.map((block) => block.text as string)
-			.join("");
-		schedulePreview(text);
-	});
-
 	pi.on("context", async (event) => {
 		return {
 			messages: event.messages.filter((message) => {
@@ -932,17 +879,14 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_end", async (event, ctx) => {
 		if (!runtime || !chatTurnInFlight) {
-			clearPreviewTimer();
 			stopTypingLoop();
 			updateStatus(ctx);
 			return;
 		}
 		const summary = extractAssistantSummary(event.messages as unknown[]);
 		if (summary.stopReason === "aborted") {
-			clearPreviewTimer();
 			stopTypingLoop();
 			chatTurnInFlight = false;
-			await previewChain.catch(() => undefined);
 			await runtime.failActiveJob("aborted");
 			const action = pendingControlAction;
 			pendingControlAction = undefined;
@@ -956,10 +900,8 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		if (summary.stopReason === "error") {
-			clearPreviewTimer();
 			stopTypingLoop();
 			chatTurnInFlight = false;
-			await previewChain.catch(() => undefined);
 			const errorMessage = summary.errorMessage || "agent error";
 			await runtime.failActiveJob(errorMessage);
 			if (liveConnection) {
@@ -974,31 +916,18 @@ export default function (pi: ExtensionAPI) {
 			await tryDispatch(ctx);
 			return;
 		}
+		stopTypingLoop();
 		let remoteMessageId: string | undefined;
 		const attachmentPaths = [...queuedOutboundAttachments];
 		queuedOutboundAttachments = [];
-		if (liveConnection) {
+		const finalText = summary.text || (attachmentPaths.length > 0 ? "Attached requested file(s)." : "");
+		if (liveConnection && finalText) {
 			try {
-				clearPreviewTimer();
-				stopTypingLoop();
-				await previewChain.catch(() => undefined);
-				pendingPreviewText = summary.text || (attachmentPaths.length > 0 ? "Attached requested file(s)." : "");
-				if (attachmentPaths.length > 0) {
-					await Promise.race([liveConnection.clearPreview(), waitForAbort(ctx.signal)]);
-					remoteMessageId = await Promise.race([
-						liveConnection.sendFinal(pendingPreviewText, attachmentPaths, ctx.signal, activeTriggerMessageId),
-						new Promise<string>((_, reject) =>
-							setTimeout(() => reject(new Error("attachment upload timed out")), 120000),
-						),
-						waitForAbort(ctx.signal),
-					]);
-				} else {
-					const ids = await Promise.race([
-						liveConnection.syncPreview(pendingPreviewText, true),
-						waitForAbort(ctx.signal),
-					]);
-					remoteMessageId = ids[0];
-				}
+				remoteMessageId = await Promise.race([
+					liveConnection.send(finalText, attachmentPaths, ctx.signal, activeTriggerMessageId),
+					new Promise<string>((_, reject) => setTimeout(() => reject(new Error("send timed out")), 120000)),
+					waitForAbort(ctx.signal),
+				]);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				chatTurnInFlight = false;
@@ -1015,7 +944,7 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		chatTurnInFlight = false;
-		await runtime.completeActiveJob(pendingPreviewText, remoteMessageId, attachmentPaths);
+		await runtime.completeActiveJob(finalText, remoteMessageId, attachmentPaths);
 		updateStatus(ctx);
 		await tryDispatch(ctx);
 	});

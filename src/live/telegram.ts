@@ -324,7 +324,7 @@ export async function connectTelegramLive(
 					})
 				).message_id,
 			),
-		sendFinal: async (text, attachmentPaths = [], signal, replyToMessageId) => {
+		send: async (text, attachmentPaths = [], signal, replyToMessageId) => {
 			const replyParam = replyToMessageId ? { reply_to_message_id: Number(replyToMessageId) } : {};
 			if (attachmentPaths.length === 0) {
 				return String(

@@ -16,7 +16,7 @@ export interface LiveConnection {
 	conversation: ResolvedConversation;
 	disconnect(): Promise<void>;
 	sendImmediate(text: string, replyToMessageId?: string): Promise<string | undefined>;
-	sendFinal(
+	send(
 		text: string,
 		attachmentPaths?: string[],
 		signal?: AbortSignal,
