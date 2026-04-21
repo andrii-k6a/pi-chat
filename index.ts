@@ -162,6 +162,14 @@ export default function (pi: ExtensionAPI) {
 		return undefined;
 	}
 
+	function stableSecretsKey(secrets: Record<string, { value: string; hosts: string[] }>): string {
+		return JSON.stringify(
+			Object.entries(secrets)
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([name, secret]) => ({ name, value: secret.value, hosts: [...secret.hosts].sort() })),
+		);
+	}
+
 	function getLocalToolCwd(ctx: ExtensionContext): string {
 		return ctx.cwd;
 	}
@@ -309,6 +317,32 @@ export default function (pi: ExtensionAPI) {
 			lines.push(`Queue: ${status.queueLength}${status.hasActiveJob ? " (active)" : ""}`);
 		}
 		return lines.join("\n") || "No usage data yet.";
+	}
+
+	async function restartSandbox(ctx: ExtensionContext, conversationId: string): Promise<boolean> {
+		const config = await loadChatConfig();
+		const conversation = resolveConversation(config, conversationId);
+		if (!conversation) return false;
+		const nextSandbox = new ConversationSandbox(conversation);
+		try {
+			await prepareGondolin(ctx);
+			await nextSandbox.start();
+		} catch (error) {
+			await nextSandbox.close().catch(() => undefined);
+			const message = error instanceof Error ? error.message : String(error);
+			updateStatus(ctx, message);
+			await showNotice(ctx, "Sandbox restart error", message, "error");
+			return false;
+		}
+		const previousSandbox = sandbox;
+		sandbox = nextSandbox;
+		if (runtime && runtime.conversation.conversationId === conversation.conversationId) {
+			Object.assign(runtime.conversation, conversation);
+		}
+		if (previousSandbox) await previousSandbox.close().catch(() => undefined);
+		await showChatContextMessage();
+		updateStatus(ctx);
+		return true;
 	}
 
 	async function connectConversation(
@@ -721,7 +755,30 @@ export default function (pi: ExtensionAPI) {
 		description: "Configure pi-chat Discord and Telegram accounts and channels",
 		handler: async (_args, ctx) => {
 			await loadConfigOnce();
+			const conversationId = runtime?.conversation.conversationId;
+			const beforeSecrets = runtime ? stableSecretsKey(runtime.conversation.gondolinSecrets) : undefined;
 			await runChatConfigUI(ctx);
+			if (!conversationId || !runtime) return;
+			const updatedConfig = await loadChatConfig();
+			const updatedConversation = resolveConversation(updatedConfig, conversationId);
+			if (!updatedConversation) return;
+			const afterSecrets = stableSecretsKey(updatedConversation.gondolinSecrets);
+			if (beforeSecrets === afterSecrets) return;
+			const confirm = await ctx.ui.confirm(
+				"Restart sandbox",
+				"Secrets for the connected channel changed. Restart the sandbox now so the new secrets are picked up?",
+			);
+			if (!confirm) return;
+			const action = async () => {
+				await restartSandbox(ctx, conversationId);
+			};
+			if (chatTurnInFlight || !ctx.isIdle()) {
+				pendingControlAction = action;
+				ctx.abort();
+				ctx.ui.notify("Aborting current turn, then restarting sandbox.", "info");
+				return;
+			}
+			await action();
 		},
 	});
 
