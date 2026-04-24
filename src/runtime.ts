@@ -41,7 +41,9 @@ function toGuestDisplayPath(conversation: ResolvedConversation, localPath: strin
 
 function formatTranscriptRecord(conversation: ResolvedConversation, record: ChatLogRecord): string[] {
 	if (record.type !== "inbound") return [];
-	const lines = [`- [${record.timestamp}] ${record.userName ?? record.userId}: ${record.text || "(no text)"}`];
+	const lines = [
+		`- [${record.timestamp}] [uid:${record.userId}] ${record.userName ?? "unknown"}: ${record.text || "(no text)"}`,
+	];
 	if (record.attachments.length > 0) {
 		lines.push("  attachments:");
 		for (const attachment of record.attachments)
