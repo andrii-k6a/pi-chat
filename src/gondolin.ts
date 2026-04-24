@@ -96,29 +96,24 @@ export class ConversationSandbox {
 		if (vm) await vm.close();
 	}
 
-	private resolveGuestPath(inputPath: string, allowShared = true): string {
+	private resolveGuestPath(inputPath: string): string {
 		const trimmed = inputPath.trim();
 		if (!trimmed) throw new Error("Path must not be empty");
 		const base = trimmed.startsWith("/") ? "/" : GONDOLIN_WORKSPACE;
-		const resolved = path.posix.resolve(base, trimmed);
-		if (resolved === GONDOLIN_WORKSPACE || resolved.startsWith(`${GONDOLIN_WORKSPACE}/`)) return resolved;
-		if (allowShared && (resolved === GONDOLIN_SHARED || resolved.startsWith(`${GONDOLIN_SHARED}/`))) return resolved;
-		throw new Error(
-			`Path must be inside ${GONDOLIN_WORKSPACE}${allowShared ? ` or ${GONDOLIN_SHARED}` : ""}: ${inputPath}`,
-		);
+		return path.posix.resolve(base, trimmed);
 	}
 
 	toAttachmentHostPath(inputPath: string): string {
-		const guestPath = this.resolveGuestPath(inputPath, false);
+		const guestPath = this.resolveGuestPath(inputPath);
 		return this.guestToHostPath(guestPath);
 	}
 
-	resolveToolPath(inputPath: string, allowShared = true): string {
-		return this.resolveGuestPath(inputPath, allowShared);
+	resolveToolPath(inputPath: string): string {
+		return this.resolveGuestPath(inputPath);
 	}
 
-	guestToHostPath(inputPath: string, allowShared = true): string {
-		const guestPath = this.resolveGuestPath(inputPath, allowShared);
+	guestToHostPath(inputPath: string): string {
+		const guestPath = this.resolveGuestPath(inputPath);
 		if (guestPath === GONDOLIN_WORKSPACE || guestPath.startsWith(`${GONDOLIN_WORKSPACE}/`)) {
 			const relativePath = path.posix.relative(GONDOLIN_WORKSPACE, guestPath);
 			return path.join(this.conversation.workspaceDir, ...relativePath.split("/").filter(Boolean));

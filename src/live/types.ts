@@ -5,6 +5,7 @@ export interface LiveConnectionHandlers {
 	onMessage(input: InboundMessageInput, checkpoint?: { cursor?: string; messageId?: string }): Promise<void>;
 	onCaughtUp(): Promise<void>;
 	onError(error: Error): Promise<void>;
+	onDisconnect?(): Promise<void>;
 }
 
 export interface ResumeState {

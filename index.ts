@@ -451,6 +451,16 @@ export default function (pi: ExtensionAPI) {
 						if (runtime) await runtime.appendError(error.message);
 						updateStatus(ctx, error.message);
 					},
+					onDisconnect: async () => {
+						if (!runtime) return;
+						const cid = runtime.conversation.conversationId;
+						updateStatus(ctx, "disconnected, reconnecting...");
+						if (liveConnection) {
+							await liveConnection.disconnect().catch(() => undefined);
+							liveConnection = undefined;
+						}
+						await connectConversation(ctx, cid, false);
+					},
 				},
 				runtime.getLastCheckpoint(),
 			);
@@ -958,10 +968,10 @@ export default function (pi: ExtensionAPI) {
 			await tryDispatch(ctx);
 			return;
 		}
-		if (summary.stopReason === "error") {
+		if (summary.stopReason === "error" || summary.stopReason === "length") {
 			stopTypingLoop();
 			chatTurnInFlight = false;
-			const errorMessage = summary.errorMessage || "agent error";
+			const errorMessage = summary.errorMessage || `agent ${summary.stopReason}`;
 			await runtime.failActiveJob(errorMessage);
 			if (liveConnection) {
 				try {

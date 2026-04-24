@@ -163,8 +163,17 @@ async function catchUp(
 	afterId?: string,
 ): Promise<void> {
 	const channel = await resolveTextChannel(client, conversation);
-	const messages = await channel.messages.fetch(afterId ? { after: afterId, limit: 100 } : { limit: 25 });
-	for (const message of [...messages.values()].reverse()) {
+	const allMessages: Message[] = [];
+	let cursor = afterId;
+	while (true) {
+		const batch = await channel.messages.fetch(cursor ? { after: cursor, limit: 100 } : { limit: 25 });
+		if (batch.size === 0) break;
+		const sorted = [...batch.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+		allMessages.push(...sorted);
+		cursor = sorted[sorted.length - 1].id;
+		if (batch.size < 100) break;
+	}
+	for (const message of allMessages) {
 		const input = await messageToInput(conversation, account, message);
 		if (!input) continue;
 		await handlers.onMessage(input, { messageId: input.messageId, cursor: input.messageId });
@@ -205,6 +214,24 @@ export async function connectDiscordLive(
 		}
 	};
 	client.on(Events.MessageCreate, onMessageCreate);
+
+	let disconnectFired = false;
+	const fireDisconnect = () => {
+		if (disconnectFired) return;
+		disconnectFired = true;
+		void handlers.onDisconnect?.();
+	};
+	client.on(Events.Error, (error) => {
+		void handlers.onError(error instanceof Error ? error : new Error(String(error)));
+	});
+	client.on(Events.Invalidated, () => fireDisconnect());
+	client.on("disconnect", () => fireDisconnect());
+	client.ws.on("close" as any, () => {
+		setTimeout(() => {
+			if (!client.isReady()) fireDisconnect();
+		}, 30000);
+	});
+
 	return {
 		conversation,
 		disconnect: async () => {
