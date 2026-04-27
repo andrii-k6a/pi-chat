@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ensureGuestAssets, hasGuestAssets } from "@earendil-works/gondolin";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import {
@@ -14,17 +16,20 @@ import {
 	createWriteToolDefinition,
 	formatSkillsForPrompt,
 	loadSkillsFromDir,
+	SessionManager,
 } from "@mariozechner/pi-coding-agent";
 import { Box, Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import {
 	CHAT_CONFIG_PATH,
+	CHAT_HOME,
 	ensureChatHome,
 	listConfiguredConversations,
 	loadChatConfig,
 	resolveConversation,
 } from "./src/config.js";
 
+import type { ResolvedConversation } from "./src/core/config-types.js";
 import { ConversationSandbox, GONDOLIN_SHARED, GONDOLIN_WORKSPACE } from "./src/gondolin.js";
 import { connectLive } from "./src/live/index.js";
 import type { LiveConnection } from "./src/live/types.js";
@@ -89,6 +94,57 @@ type PersistedChatState = {
 };
 
 const SESSION_STATE_CUSTOM_TYPE = "pi-chat-state";
+const EXTENSION_PATH = fileURLToPath(import.meta.url);
+
+function tmuxSafeName(value: string): string {
+	const safe = value.replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "channel";
+	return `pi-chat-${safe}`.slice(0, 80);
+}
+
+function shellQuote(value: string): string {
+	return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function ensureTmux(): void {
+	const result = spawnSync("tmux", ["-V"], { encoding: "utf8" });
+	if (result.error || result.status !== 0) throw new Error("tmux not found. Install tmux and try again.");
+}
+
+function tmuxSessionExists(name: string): boolean {
+	return spawnSync("tmux", ["has-session", "-t", name], { stdio: "ignore" }).status === 0;
+}
+
+function spawnConversationTmux(ctx: ExtensionContext, conversation: ResolvedConversation, restart: boolean): string {
+	const tmuxName = tmuxSafeName(conversation.conversationId);
+	if (restart && tmuxSessionExists(tmuxName)) spawnSync("tmux", ["kill-session", "-t", tmuxName], { stdio: "ignore" });
+	if (tmuxSessionExists(tmuxName)) return `${conversation.conversationName}: already running (${tmuxName})`;
+
+	const sessionDir = join(CHAT_HOME, "tmux-sessions", tmuxName);
+	const session = SessionManager.continueRecent(ctx.cwd, sessionDir);
+	session.appendCustomEntry(SESSION_STATE_CUSTOM_TYPE, { conversationId: conversation.conversationId });
+	session.appendSessionInfo(`pi-chat ${conversation.conversationName}`);
+	const sessionFile = session.getSessionFile();
+	if (!sessionFile) throw new Error(`Could not create pi session for ${conversation.conversationName}`);
+
+	const command = [
+		"exec pi",
+		"--session",
+		shellQuote(sessionFile),
+		"--session-dir",
+		shellQuote(sessionDir),
+		"-e",
+		shellQuote(EXTENSION_PATH),
+	].join(" ");
+	const result = spawnSync("tmux", ["new-session", "-d", "-s", tmuxName, "-c", ctx.cwd, command], {
+		encoding: "utf8",
+	});
+	if (result.error || result.status !== 0) {
+		throw new Error(
+			result.stderr.trim() || result.error?.message || `tmux failed for ${conversation.conversationName}`,
+		);
+	}
+	return `${conversation.conversationName}: started (${tmuxName})`;
+}
 
 function abortError(): Error {
 	const error = new Error("aborted");
@@ -805,6 +861,23 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			ctx.ui.notify(configured.map((item) => item.conversationName).join("\n"), "info");
+		},
+	});
+
+	pi.registerCommand("chat-spawn-all", {
+		description: "Spawn all configured pi-chat channels in detached tmux sessions",
+		handler: async (args, ctx) => {
+			await loadConfigOnce();
+			ensureTmux();
+			const restart = args.split(/\s+/).includes("--restart");
+			const config = await loadChatConfig();
+			const configured = listConfiguredConversations(config);
+			if (configured.length === 0) {
+				ctx.ui.notify(`No configured channels. Run /chat-config. (${CHAT_CONFIG_PATH})`, "warning");
+				return;
+			}
+			const lines = configured.map((conversation) => spawnConversationTmux(ctx, conversation, restart));
+			ctx.ui.notify(`${lines.join("\n")}\n\nAttach with: tmux attach -t <session>`, "info");
 		},
 	});
 

@@ -70,6 +70,8 @@ pi -e /path/to/pi-chat
 | `/chat-disconnect` | Disconnect the current channel |
 | `/chat-status` | Show connection status, model, usage, context |
 | `/chat-list` | List configured channels |
+| `/chat-spawn-all` | Spawn every configured channel in detached tmux sessions |
+| `/chat-spawn-all --restart` | Restart those tmux sessions |
 | `/chat-new` | Start a new pi session, keeping the chat connection |
 
 ---
