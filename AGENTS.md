@@ -11,7 +11,7 @@ Discord/Telegram ←→ Live Adapter ←→ Runtime (log, jobs, slices) ←→ p
                                    /workspace  /shared
 ```
 
-- **One VM per connection.** Started on `/chat-connect`, closed on `/chat-disconnect`. `/chat-spawn-all` launches one detached tmux/pi worker per configured channel using the `--chat-conversation <account/channel>` extension flag. `/chat-workers`, `/chat-open-all`, and `/chat-kill-all` manage those workers through tmux.
+- **One VM per connection.** Started on `/chat-connect`, closed on `/chat-disconnect`. `/chat-spawn-all` launches one detached tmux/pi worker per configured channel using the `--chat-conversation <account/channel>` extension flag. `/chat-workers`, `/chat-open-all`, and `/chat-kill-all` manage those workers through tmux. Workers write status JSON to `~/.pi/agent/chat/worker-status/`; the `chat_workers` tool reads it.
 - **One JSONL log per channel.** Append-only event stream: inbound, outbound, job lifecycle.
 - **Trigger-based dispatch.** Mentions in channels, every message in DMs. Triggers queue jobs; jobs produce slices of inbound records for the agent.
 - **Tools run inside the VM.** `read`, `write`, `edit`, `bash` are routed through Gondolin. `chat_history` and `chat_attach` run on the host.

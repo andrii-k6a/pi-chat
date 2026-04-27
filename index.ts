@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ensureGuestAssets, hasGuestAssets } from "@earendil-works/gondolin";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
@@ -96,6 +96,28 @@ const SESSION_STATE_CUSTOM_TYPE = "pi-chat-state";
 const CHAT_CONVERSATION_FLAG = "chat-conversation";
 const WORKER_TMUX_PREFIX = "pi-chat-worker-";
 const DASHBOARD_TMUX_SESSION = "pi-chat-dashboard";
+const WORKER_STATUS_DIR = join(CHAT_HOME, "worker-status");
+
+interface WorkerStatusSnapshot {
+	conversationId: string;
+	conversationName: string;
+	service: string;
+	pid: number;
+	cwd: string;
+	sessionFile?: string;
+	tmuxSession: string;
+	state: "connected" | "error";
+	updatedAt: string;
+	model?: string;
+	thinking?: string;
+	contextPercent?: number | null;
+	queueLength: number;
+	hasActiveJob: boolean;
+	chatTurnInFlight: boolean;
+	recordCount: number;
+	lastRecordId: number;
+	lastError?: string;
+}
 
 function tmuxSafeName(value: string): string {
 	const safe = value.replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "channel";
@@ -147,14 +169,45 @@ function killManagedTmuxSessions(): string[] {
 	return killed;
 }
 
-function formatWorkerStatus(conversations: ResolvedConversation[]): string {
+function workerStatusPath(conversationId: string): string {
+	return join(WORKER_STATUS_DIR, `${tmuxSafeName(conversationId)}.json`);
+}
+
+async function readWorkerStatus(conversationId: string): Promise<WorkerStatusSnapshot | undefined> {
+	try {
+		return JSON.parse(await readFile(workerStatusPath(conversationId), "utf8")) as WorkerStatusSnapshot;
+	} catch {
+		return undefined;
+	}
+}
+
+function formatStatusAge(updatedAt?: string): string {
+	if (!updatedAt) return "no status";
+	const ageMs = Date.now() - Date.parse(updatedAt);
+	if (!Number.isFinite(ageMs) || ageMs < 0) return updatedAt;
+	const seconds = Math.round(ageMs / 1000);
+	if (seconds < 60) return `${seconds}s ago`;
+	const minutes = Math.round(seconds / 60);
+	if (minutes < 60) return `${minutes}m ago`;
+	const hours = Math.round(minutes / 60);
+	return `${hours}h ago`;
+}
+
+async function formatWorkerStatus(conversations: ResolvedConversation[]): Promise<string> {
 	const sessions = listTmuxSessions();
-	return conversations
-		.map((conversation) => {
-			const tmuxName = tmuxSafeName(conversation.conversationId);
-			return `${sessions.has(tmuxName) ? "●" : "○"} ${conversation.conversationName} (${tmuxName})`;
-		})
-		.join("\n");
+	const lines: string[] = [];
+	for (const conversation of conversations) {
+		const tmuxName = tmuxSafeName(conversation.conversationId);
+		const snapshot = await readWorkerStatus(conversation.conversationId);
+		const running = sessions.has(tmuxName);
+		const state = snapshot?.lastError ? `error: ${snapshot.lastError}` : (snapshot?.state ?? "unknown");
+		const queue = snapshot ? `q:${snapshot.queueLength}${snapshot.chatTurnInFlight ? " active" : ""}` : "q:?";
+		const model = snapshot?.model ? ` ${snapshot.model}` : "";
+		lines.push(
+			`${running ? "●" : "○"} ${conversation.conversationName} — ${state}, ${queue}, ${formatStatusAge(snapshot?.updatedAt)}${model}\n  ${tmuxName}`,
+		);
+	}
+	return lines.join("\n");
 }
 
 function runTmux(args: string[]): void {
@@ -270,6 +323,7 @@ export default function (pi: ExtensionAPI) {
 	let chatTurnInFlight = false;
 	let configLoadedAtLeastOnce = false;
 	let typingInterval: ReturnType<typeof setInterval> | undefined;
+	let workerStatusInterval: ReturnType<typeof setInterval> | undefined;
 	let queuedOutboundAttachments: string[] = [];
 	let pendingChatDispatch = false;
 	let pendingControlAction: (() => Promise<void>) | undefined;
@@ -608,6 +662,7 @@ export default function (pi: ExtensionAPI) {
 			return false;
 		}
 		persistChatState(conversation.conversationId);
+		startWorkerStatusLoop(ctx);
 		if (interactive) ctx.ui.notify(`Connected ${conversation.conversationName}`, "info");
 		await showChatContextMessage();
 		updateStatus(ctx);
@@ -637,7 +692,50 @@ export default function (pi: ExtensionAPI) {
 		pi.sendMessage({ customType: "chat-context", content: sections.join("\n"), display: true });
 	}
 
+	async function writeWorkerStatus(ctx: ExtensionContext, error?: string): Promise<void> {
+		if (!runtime) return;
+		const status = runtime.getStatus();
+		const usage = ctx.getContextUsage();
+		const snapshot: WorkerStatusSnapshot = {
+			conversationId: status.conversationId,
+			conversationName: status.conversationName,
+			service: runtime.conversation.service,
+			pid: process.pid,
+			cwd: ctx.cwd,
+			sessionFile: ctx.sessionManager.getSessionFile(),
+			tmuxSession: tmuxSafeName(status.conversationId),
+			state: error ? "error" : "connected",
+			updatedAt: new Date().toISOString(),
+			model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
+			thinking: pi.getThinkingLevel(),
+			contextPercent: usage?.percent,
+			queueLength: status.queueLength,
+			hasActiveJob: status.hasActiveJob,
+			chatTurnInFlight,
+			recordCount: status.recordCount,
+			lastRecordId: status.lastRecordId,
+			lastError: error,
+		};
+		await mkdir(WORKER_STATUS_DIR, { recursive: true });
+		await writeFile(workerStatusPath(status.conversationId), `${JSON.stringify(snapshot, null, "\t")}\n`, "utf8");
+	}
+
+	function startWorkerStatusLoop(ctx: ExtensionContext): void {
+		if (workerStatusInterval) clearInterval(workerStatusInterval);
+		void writeWorkerStatus(ctx).catch(() => undefined);
+		workerStatusInterval = setInterval(() => {
+			void writeWorkerStatus(ctx).catch(() => undefined);
+		}, 15000);
+	}
+
+	function stopWorkerStatusLoop(): void {
+		if (!workerStatusInterval) return;
+		clearInterval(workerStatusInterval);
+		workerStatusInterval = undefined;
+	}
+
 	function updateStatus(ctx: ExtensionContext, error?: string): void {
+		void writeWorkerStatus(ctx, error).catch(() => undefined);
 		const theme = ctx.ui.theme;
 		const label = theme.fg("accent", "chat");
 		if (error) {
@@ -670,6 +768,22 @@ export default function (pi: ExtensionAPI) {
 		}
 		void liveConnection?.stopTyping();
 	}
+
+	pi.registerTool({
+		name: "chat_workers",
+		label: "Chat Workers",
+		description: "Show configured pi-chat worker status from tmux and worker status snapshots.",
+		parameters: Type.Object({}),
+		renderCall(_args, theme) {
+			return new Text(theme.fg("toolTitle", theme.bold("chat_workers")), 0, 0);
+		},
+		async execute() {
+			const config = await loadChatConfig();
+			const configured = listConfiguredConversations(config);
+			const body = configured.length > 0 ? await formatWorkerStatus(configured) : "No configured channels.";
+			return { content: [{ type: "text", text: body }], details: { count: configured.length } };
+		},
+	});
 
 	pi.registerTool({
 		name: "chat_history",
@@ -860,6 +974,8 @@ export default function (pi: ExtensionAPI) {
 
 	async function disconnectRuntime(ctx: ExtensionContext, clearPersistedState = true): Promise<void> {
 		stopTypingLoop();
+		stopWorkerStatusLoop();
+		if (runtime) await writeWorkerStatus(ctx, "disconnected").catch(() => undefined);
 		const connection = liveConnection;
 		liveConnection = undefined;
 		if (connection) await connection.disconnect().catch(() => undefined);
@@ -963,7 +1079,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(`No configured channels. Run /chat-config. (${CHAT_CONFIG_PATH})`, "warning");
 				return;
 			}
-			ctx.ui.notify(formatWorkerStatus(configured), "info");
+			ctx.ui.notify(await formatWorkerStatus(configured), "info");
 		},
 	});
 
@@ -1090,7 +1206,16 @@ export default function (pi: ExtensionAPI) {
 				return tool.execute(id, params, signal, onUpdate);
 			},
 		});
-		pi.setActiveTools(["read", "write", "edit", "bash", "chat_history", "chat_attach", "chat_request_secret"]);
+		pi.setActiveTools([
+			"read",
+			"write",
+			"edit",
+			"bash",
+			"chat_history",
+			"chat_attach",
+			"chat_request_secret",
+			"chat_workers",
+		]);
 		updateStatus(ctx);
 		const flaggedConversationId = pi.getFlag(CHAT_CONVERSATION_FLAG);
 		const persistedConversationId = getPersistedConversationId(ctx);
