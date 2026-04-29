@@ -18,6 +18,12 @@ function isInside(root: string, value: string): boolean {
 	return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
+function guestMountRoot(guestPath: string): typeof GONDOLIN_WORKSPACE | typeof GONDOLIN_SHARED | undefined {
+	if (guestPath === GONDOLIN_WORKSPACE || guestPath.startsWith(`${GONDOLIN_WORKSPACE}/`)) return GONDOLIN_WORKSPACE;
+	if (guestPath === GONDOLIN_SHARED || guestPath.startsWith(`${GONDOLIN_SHARED}/`)) return GONDOLIN_SHARED;
+	return undefined;
+}
+
 function resolveSecretEnvironment(conversation: ResolvedConversation): {
 	env?: Record<string, string>;
 	httpHooks?: ReturnType<typeof createHttpHooks>["httpHooks"];
@@ -100,7 +106,9 @@ export class ConversationSandbox {
 		const trimmed = inputPath.trim();
 		if (!trimmed) throw new Error("Path must not be empty");
 		const base = trimmed.startsWith("/") ? "/" : GONDOLIN_WORKSPACE;
-		return path.posix.resolve(base, trimmed);
+		const guestPath = path.posix.resolve(base, trimmed);
+		if (!guestMountRoot(guestPath)) throw new Error(`Path is outside mounted storage: ${inputPath}`);
+		return guestPath;
 	}
 
 	toAttachmentHostPath(inputPath: string): string {
@@ -114,12 +122,16 @@ export class ConversationSandbox {
 
 	guestToHostPath(inputPath: string): string {
 		const guestPath = this.resolveGuestPath(inputPath);
-		if (guestPath === GONDOLIN_WORKSPACE || guestPath.startsWith(`${GONDOLIN_WORKSPACE}/`)) {
+		const mountRoot = guestMountRoot(guestPath);
+		if (mountRoot === GONDOLIN_WORKSPACE) {
 			const relativePath = path.posix.relative(GONDOLIN_WORKSPACE, guestPath);
 			return path.join(this.conversation.workspaceDir, ...relativePath.split("/").filter(Boolean));
 		}
-		const relativePath = path.posix.relative(GONDOLIN_SHARED, guestPath);
-		return path.join(this.conversation.sharedDir, ...relativePath.split("/").filter(Boolean));
+		if (mountRoot === GONDOLIN_SHARED) {
+			const relativePath = path.posix.relative(GONDOLIN_SHARED, guestPath);
+			return path.join(this.conversation.sharedDir, ...relativePath.split("/").filter(Boolean));
+		}
+		throw new Error(`Path is outside mounted storage: ${inputPath}`);
 	}
 
 	hostToGuestPath(hostPath: string): string {
@@ -139,12 +151,12 @@ export class ConversationSandbox {
 		const vm = await this.start();
 		return {
 			readFile: async (guestPath: string) => {
-				this.resolveGuestPath(guestPath);
-				return vm.fs.readFile(guestPath);
+				const resolvedPath = this.resolveGuestPath(guestPath);
+				return vm.fs.readFile(resolvedPath);
 			},
 			access: async (guestPath: string) => {
-				this.resolveGuestPath(guestPath);
-				await vm.fs.access(guestPath);
+				const resolvedPath = this.resolveGuestPath(guestPath);
+				await vm.fs.access(resolvedPath);
 			},
 			detectImageMimeType: async (guestPath: string) => {
 				const ext = path.posix.extname(this.resolveGuestPath(guestPath)).toLowerCase();
@@ -161,12 +173,12 @@ export class ConversationSandbox {
 		const vm = await this.start();
 		return {
 			writeFile: async (guestPath: string, content: string) => {
-				this.resolveGuestPath(guestPath);
-				await vm.fs.writeFile(guestPath, content);
+				const resolvedPath = this.resolveGuestPath(guestPath);
+				await vm.fs.writeFile(resolvedPath, content);
 			},
 			mkdir: async (guestPath: string) => {
-				this.resolveGuestPath(guestPath);
-				await vm.fs.mkdir(guestPath, { recursive: true });
+				const resolvedPath = this.resolveGuestPath(guestPath);
+				await vm.fs.mkdir(resolvedPath, { recursive: true });
 			},
 		};
 	}
@@ -175,16 +187,16 @@ export class ConversationSandbox {
 		const vm = await this.start();
 		return {
 			readFile: async (guestPath: string) => {
-				this.resolveGuestPath(guestPath);
-				return vm.fs.readFile(guestPath);
+				const resolvedPath = this.resolveGuestPath(guestPath);
+				return vm.fs.readFile(resolvedPath);
 			},
 			writeFile: async (guestPath: string, content: string) => {
-				this.resolveGuestPath(guestPath);
-				await vm.fs.writeFile(guestPath, content);
+				const resolvedPath = this.resolveGuestPath(guestPath);
+				await vm.fs.writeFile(resolvedPath, content);
 			},
 			access: async (guestPath: string) => {
-				this.resolveGuestPath(guestPath);
-				await vm.fs.access(guestPath);
+				const resolvedPath = this.resolveGuestPath(guestPath);
+				await vm.fs.access(resolvedPath);
 			},
 		};
 	}
@@ -194,20 +206,20 @@ export class ConversationSandbox {
 		return {
 			exists: async (guestPath: string) => {
 				try {
-					this.resolveGuestPath(guestPath);
-					await vm.fs.access(guestPath);
+					const resolvedPath = this.resolveGuestPath(guestPath);
+					await vm.fs.access(resolvedPath);
 					return true;
 				} catch {
 					return false;
 				}
 			},
 			stat: async (guestPath: string) => {
-				this.resolveGuestPath(guestPath);
-				return vm.fs.stat(guestPath);
+				const resolvedPath = this.resolveGuestPath(guestPath);
+				return vm.fs.stat(resolvedPath);
 			},
 			readdir: async (guestPath: string) => {
-				this.resolveGuestPath(guestPath);
-				return vm.fs.listDir(guestPath);
+				const resolvedPath = this.resolveGuestPath(guestPath);
+				return vm.fs.listDir(resolvedPath);
 			},
 		};
 	}
