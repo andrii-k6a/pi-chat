@@ -1,4 +1,4 @@
-import { appendFile, copyFile, lstat, mkdir, open, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, lstat, mkdir, open, readFile, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 
 import type {
@@ -42,9 +42,8 @@ async function ensureRegularFile(path: string): Promise<void> {
 	try {
 		const info = await lstat(path);
 		if (!info.isSymbolicLink()) return;
-		const content = await readFile(path, "utf8").catch(() => "");
 		await unlink(path);
-		await writeFile(path, content, "utf8");
+		await writeFile(path, "", "utf8");
 	} catch {
 		await writeFile(path, "", { flag: "a" });
 	}
@@ -151,8 +150,8 @@ export async function materializeAttachments(
 	await ensureConversationDirs(conversation);
 	const stored: StoredAttachment[] = [];
 	for (const [index, attachment] of attachments.entries()) {
-		const fileStats = await stat(attachment.path);
-		if (!fileStats.isFile()) throw new Error(`Attachment is not a file: ${attachment.path}`);
+		const fileStats = await lstat(attachment.path);
+		if (!fileStats.isFile()) throw new Error(`Attachment is not a regular file: ${attachment.path}`);
 		const fileName = sanitizeFileName(attachment.name || basename(attachment.path));
 		const targetPath = isInside(conversation.filesDir, attachment.path)
 			? attachment.path

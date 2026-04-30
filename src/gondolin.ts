@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
-import { access, copyFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { constants as fsConstants, realpathSync } from "node:fs";
+import { access, mkdir, open, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { createHttpHooks, RealFSProvider, type SecretDefinition, VM } from "@earendil-works/gondolin";
@@ -115,14 +115,19 @@ export class ConversationSandbox {
 
 	async stageAttachment(inputPath: string): Promise<string> {
 		const sourcePath = this.guestToHostPath(inputPath);
-		const fileStats = await stat(sourcePath);
-		if (!fileStats.isFile()) throw new Error(`Not a file: ${inputPath}`);
-		const stagingDir = path.join(this.conversation.gondolinDir, "outgoing");
-		await mkdir(stagingDir, { recursive: true });
-		const safeName = path.basename(sourcePath).replace(/[^a-zA-Z0-9._-]+/g, "_") || "attachment";
-		const stagedPath = path.join(stagingDir, `${Date.now()}-${randomUUID()}-${safeName}`);
-		await copyFile(sourcePath, stagedPath);
-		return stagedPath;
+		const handle = await open(sourcePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+		try {
+			const fileStats = await handle.stat();
+			if (!fileStats.isFile()) throw new Error(`Not a file: ${inputPath}`);
+			const stagingDir = path.join(this.conversation.gondolinDir, "outgoing");
+			await mkdir(stagingDir, { recursive: true });
+			const safeName = path.basename(sourcePath).replace(/[^a-zA-Z0-9._-]+/g, "_") || "attachment";
+			const stagedPath = path.join(stagingDir, `${Date.now()}-${randomUUID()}-${safeName}`);
+			await writeFile(stagedPath, await handle.readFile(), { flag: "wx" });
+			return stagedPath;
+		} finally {
+			await handle.close();
+		}
 	}
 
 	resolveToolPath(inputPath: string): string {
@@ -151,14 +156,25 @@ export class ConversationSandbox {
 		return resolvedHostPath;
 	}
 
+	private assertMountedHostPath(hostPath: string): string {
+		const resolved = realpathSync(hostPath);
+		const workspaceRoot = realpathSync(this.conversation.workspaceDir);
+		if (isInside(workspaceRoot, resolved)) return resolved;
+		const sharedRoot = realpathSync(this.conversation.sharedDir);
+		if (isInside(sharedRoot, resolved)) return resolved;
+		throw new Error(`Path is outside mounted storage: ${hostPath}`);
+	}
+
 	hostToGuestPath(hostPath: string): string {
-		const resolved = path.resolve(hostPath);
-		if (isInside(this.conversation.workspaceDir, resolved)) {
-			const relativePath = toPosix(path.relative(this.conversation.workspaceDir, resolved));
+		const resolved = this.assertMountedHostPath(hostPath);
+		const workspaceRoot = realpathSync(this.conversation.workspaceDir);
+		if (isInside(workspaceRoot, resolved)) {
+			const relativePath = toPosix(path.relative(workspaceRoot, resolved));
 			return relativePath ? path.posix.join(GONDOLIN_WORKSPACE, relativePath) : GONDOLIN_WORKSPACE;
 		}
-		if (isInside(this.conversation.sharedDir, resolved)) {
-			const relativePath = toPosix(path.relative(this.conversation.sharedDir, resolved));
+		const sharedRoot = realpathSync(this.conversation.sharedDir);
+		if (isInside(sharedRoot, resolved)) {
+			const relativePath = toPosix(path.relative(sharedRoot, resolved));
 			return relativePath ? path.posix.join(GONDOLIN_SHARED, relativePath) : GONDOLIN_SHARED;
 		}
 		throw new Error(`Path is outside mounted storage: ${hostPath}`);
@@ -272,8 +288,8 @@ export class ConversationSandbox {
 
 	async createGrepOperations() {
 		return {
-			isDirectory: async (hostPath: string) => (await stat(hostPath)).isDirectory(),
-			readFile: async (hostPath: string) => readFile(hostPath, "utf8"),
+			isDirectory: async (hostPath: string) => (await stat(this.assertMountedHostPath(hostPath))).isDirectory(),
+			readFile: async (hostPath: string) => readFile(this.assertMountedHostPath(hostPath), "utf8"),
 		};
 	}
 
