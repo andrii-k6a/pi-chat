@@ -4,7 +4,7 @@ import { type Dirent, constants as fsConstants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative } from "node:path";
 import { ensureGuestAssets, hasGuestAssets } from "@earendil-works/gondolin";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	createBashTool,
 	createBashToolDefinition,
@@ -15,8 +15,8 @@ import {
 	createWriteTool,
 	createWriteToolDefinition,
 	SessionManager,
-} from "@mariozechner/pi-coding-agent";
-import { Box, Text } from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-coding-agent";
+import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import {
 	CHAT_CONFIG_PATH,

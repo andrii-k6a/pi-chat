@@ -1,6 +1,6 @@
 {
 	"name": "pi-chat",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"private": false,
 	"description": "Multi-service chat bridge extension for pi",
 	"type": "module",
@@ -30,8 +30,8 @@
 		"format": "biome check --write ."
 	},
 	"peerDependencies": {
-		"@mariozechner/pi-coding-agent": "*",
-		"@mariozechner/pi-tui": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
 		"@sinclair/typebox": "*"
 	},
 	"devDependencies": {

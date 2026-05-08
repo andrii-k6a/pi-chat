@@ -1,5 +1,5 @@
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { BorderedLoader, DynamicBorder, getSettingsListTheme } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { BorderedLoader, DynamicBorder, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import {
 	Container,
 	Key,
@@ -9,7 +9,7 @@ import {
 	type SettingItem,
 	SettingsList,
 	Text,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 
 export async function selectItem(
 	ctx: ExtensionContext,
